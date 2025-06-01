@@ -1,10 +1,18 @@
 import time
 import logging
+import sys
+import os
 from abc import ABC, abstractmethod
 from redis import Redis
 from rq import Queue
 from tenacity import retry, stop_after_attempt, wait_exponential
-from ratelimit import limits, RateLimitException # Ensure this is imported [cite: 26]
+from ratelimit import limits, RateLimitException
+
+# Add the project root to the Python path if not already there
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from app.core.config import settings
 from app.core.db import execute_query
 
@@ -54,7 +62,7 @@ class BaseCollector(ABC):
     def collect(self):
         """
         Orchestrates the data collection process with error handling and retries.
-        Rate limiting is now handled by the decorator on _fetch_data. [cite: 32]
+        Rate limiting is now handled by the decorator on _fetch_data.
         """
         try:
             self.logger.info(f"Fetching data for source: {self.source_name}, category: {self.category}")
@@ -108,9 +116,6 @@ class BaseCollector(ABC):
         Basic health check method.
         Could be expanded to check API connectivity, etc.
         """
-        # This is conceptual. If collectors are long-running services (e.g., FastAPI apps),
-        # this would be an endpoint. If they are scheduled scripts,
-        # successful completion of 'collect' is a health indicator.
         return {"status": "healthy", "source": self.source_name, "category": self.category, "timestamp": time.time()}
 
     def update_source_reliability(self, events_processed_count: int, successful_prediction_count: int = 0, accuracy: float = 0.0):

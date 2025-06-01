@@ -1,7 +1,13 @@
 import requests
 import logging
 import time
-from .base import BaseCollector, QUEUES # Import QUEUES if you need to publish to a specific queue other than default
+import sys
+import os
+
+# Add the project root to the Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from collectors.base import BaseCollector, QUEUES # Now use absolute import
 from app.core.config import settings
 # from schemas.data_schemas import NewsArticleSchema # Example Pydantic schema for news data
 
