@@ -1,0 +1,42 @@
+[project]
+name = "polymarket_ai_trader"
+version = "0.1.0"
+description = "AI agents for Polymarket trading."
+authors = [{ name = "Tymon Becella", email = "tymon.becella@gmail.com" }]
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]", # For serving FastAPI
+    "pydantic",
+    "pydantic-settings", # For managing settings
+    "redis", # For Redis cache and RQ
+    "rq", # Redis Queue
+    "psycopg2-binary", # PostgreSQL adapter for Supabase
+    "supabase", # Python client for Supabase (optional, can use psycopg2 directly)
+    "requests", # For making HTTP requests (APIs)
+    "tenacity", # For retry logic
+    "ratelimit", # For rate limiting
+    # Add other common libraries as needed
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",   # Linter and formatter
+]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "UP",
+    "PL",
+] # Common rules + isort, pyupgrade, Pylint
+
+[tool.ruff.format]
+quote-style = "double"
