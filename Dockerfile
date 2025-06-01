@@ -14,8 +14,8 @@ RUN pip install --no-cache-dir poetry
 # Configure poetry to not create virtual environment (we're in a container)
 RUN poetry config virtualenvs.create false
 
-# Install project dependencies
-RUN poetry install --no-root --no-dev
+# Install project dependencies (updated flag)
+RUN poetry install --no-root --only=main
 
 # Copy the rest of your application code
 COPY . .
