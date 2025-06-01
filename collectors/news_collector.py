@@ -1,5 +1,6 @@
 import requests
 import logging
+import time
 from .base import BaseCollector, QUEUES # Import QUEUES if you need to publish to a specific queue other than default
 from app.core.config import settings
 # from schemas.data_schemas import NewsArticleSchema # Example Pydantic schema for news data
