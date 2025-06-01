@@ -4,93 +4,84 @@ from abc import ABC, abstractmethod
 from redis import Redis
 from rq import Queue
 from tenacity import retry, stop_after_attempt, wait_exponential
-from ratelimit import limits, RateLimitException
+from ratelimit import limits, RateLimitException # Ensure this is imported [cite: 26]
 from app.core.config import settings
-from app.core.db import execute_query # For updating source_reliability if needed
+from app.core.db import execute_query
 
-# Basic logging configuration
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Redis connection for RQ
 redis_conn = Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT)
 
-# Define Queues (as per your plan)
-# These names should match the worker's listening queues
 QUEUES = {
-    'data_raw': Queue('data.raw', connection=redis_conn), # Renamed for Python variable compatibility
+    'data_raw': Queue('data.raw', connection=redis_conn),
     'data_validation': Queue('data.validation', connection=redis_conn),
     'data_breaking': Queue('data.breaking', connection=redis_conn),
-    # Analysis queues will be used later
 }
 
 class BaseCollector(ABC):
-    # Default rate limit: 5 calls per minute. Override in subclasses.
+    # Default rate limit values. Subclasses can override these.
     CALLS = 5
     PERIOD = 60  # seconds
 
     def __init__(self, source_name: str, category: str):
         self.source_name = source_name
-        self.category = category # political, sports, economic, miscellaneous
+        self.category = category
         self.logger = logging.getLogger(self.__class__.__name__)
 
     @abstractmethod
+    @limits(calls=CALLS, period=PERIOD) # Apply the decorator here
     def _fetch_data(self) -> list[dict]:
         """
         Core logic to fetch data from the source.
         Must be implemented by subclasses.
         Should return a list of data items (dictionaries).
+        Rate limiting is applied here.
         """
         pass
 
     def _standardize_data(self, item: dict) -> dict:
-        """
-        Transforms raw fetched item into a standardized format.
-        Subclasses should override this to map their specific data fields.
-        """
-        # Basic standardization, extend in subclasses
         return {
             "source": self.source_name,
-            "event_type": "generic_event", # Subclass should specify, e.g., "article", "tweet"
+            "event_type": "generic_event",
             "category": self.category,
-            "content": item, # The raw item itself, or a transformation of it
+            "content": item,
             "metadata": {"fetch_timestamp": time.time()},
-            "relevance_score": None, # To be filled later if applicable
+            "relevance_score": None,
         }
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     def collect(self):
         """
-        Orchestrates the data collection process with rate limiting and error handling.
+        Orchestrates the data collection process with error handling and retries.
+        Rate limiting is now handled by the decorator on _fetch_data. [cite: 32]
         """
         try:
-            with limits(calls=self.CALLS, period=self.PERIOD):
-                self.logger.info(f"Fetching data for source: {self.source_name}, category: {self.category}")
-                raw_items = self._fetch_data()
-                if not raw_items:
-                    self.logger.info(f"No new data found for {self.source_name}, category: {self.category}")
-                    return []
+            self.logger.info(f"Fetching data for source: {self.source_name}, category: {self.category}")
+            raw_items = self._fetch_data()
 
-                standardized_items = []
-                for item in raw_items:
-                    try:
-                        standardized_item = self._standardize_data(item)
-                        standardized_items.append(standardized_item)
-                    except Exception as e:
-                        self.logger.error(f"Error standardizing item from {self.source_name}: {item}. Error: {e}")
-                        # Optionally, send to an error queue or log to a dead-letter table
+            if not raw_items:
+                self.logger.info(f"No new data found for {self.source_name}, category: {self.category}")
+                return []
 
-                self.publish_to_queue(standardized_items)
-                self.logger.info(f"Successfully collected and queued {len(standardized_items)} items from {self.source_name}, category: {self.category}")
-                return standardized_items
+            standardized_items = []
+            for item in raw_items:
+                try:
+                    standardized_item = self._standardize_data(item)
+                    standardized_items.append(standardized_item)
+                except Exception as e:
+                    self.logger.error(f"Error standardizing item from {self.source_name}: {item}. Error: {e}")
+
+            self.publish_to_queue(standardized_items)
+            self.logger.info(f"Successfully collected and queued {len(standardized_items)} items from {self.source_name}, category: {self.category}")
+            return standardized_items
 
         except RateLimitException as rle:
             self.logger.warning(f"Rate limit exceeded for {self.source_name}. Waiting for {rle.period_remaining} seconds.")
             time.sleep(rle.period_remaining)
-            # Optionally, re-attempt or notify
+            raise # Re-raise to allow retry mechanism to work if not exhausted
         except Exception as e:
             self.logger.error(f"Unhandled error collecting data for {self.source_name}, category: {self.category}. Error: {e}", exc_info=True)
-            # Potentially update source_reliability table about failures here
             raise # Re-raise to allow retry mechanism to work if not exhausted
 
     def publish_to_queue(self, data_items: list[dict], queue_name: str = 'data_raw'):
