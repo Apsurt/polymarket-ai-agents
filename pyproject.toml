@@ -6,37 +6,27 @@ authors = [{ name = "Tymon Becella", email = "tymon.becella@gmail.com" }]
 requires-python = ">=3.10"
 dependencies = [
     "fastapi",
-    "uvicorn[standard]", # For serving FastAPI
+    "uvicorn[standard]",
     "pydantic",
-    "pydantic-settings", # For managing settings
-    "redis", # For Redis cache and RQ
-    "rq", # Redis Queue
-    "psycopg2-binary", # PostgreSQL adapter for Supabase
-    "supabase", # Python client for Supabase (optional, can use psycopg2 directly)
-    "requests", # For making HTTP requests (APIs)
-    "tenacity", # For retry logic
-    "ratelimit", # For rate limiting
-    # Add other common libraries as needed
+    "pydantic-settings",
+    "redis",
+    "rq",
+    "psycopg2-binary",
+    "requests",
+    "tenacity",
+    "ratelimit",
+    "supabase>=2.15.2",
+    "poetry>=2.1.3",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest",
-    "ruff",   # Linter and formatter
-]
+dev = ["pytest", "ruff"]
 
 [tool.ruff]
 line-length = 88
 
 [tool.ruff.lint]
-select = [
-    "E",
-    "F",
-    "W",
-    "I",
-    "UP",
-    "PL",
-] # Common rules + isort, pyupgrade, Pylint
+select = ["E", "F", "W", "I", "UP", "PL"]
 
 [tool.ruff.format]
 quote-style = "double"
