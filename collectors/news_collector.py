@@ -7,79 +7,193 @@ import os
 # Add the project root to the Python path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from collectors.base import BaseCollector, QUEUES # Now use absolute import
+from collectors.base import BaseCollector
 from app.core.config import settings
-# from schemas.data_schemas import NewsArticleSchema # Example Pydantic schema for news data
 
 logger = logging.getLogger(__name__)
 
 class NewsCollector(BaseCollector):
-    # Override rate limits if News API has specific ones
-    CALLS = 10 # Example: 10 calls per minute
-    PERIOD = 60
+    CALLS = 100  # NewsAPI allows 1000 requests per day for free tier
+    PERIOD = 86400  # 24 hours
 
-    def __init__(self, category: str, news_source_name: str = "news_api_org"):
-        # news_source_name helps differentiate if using multiple news APIs or endpoints
+    def __init__(self, category: str = "general", news_source_name: str = "news_api_org"):
         super().__init__(source_name=news_source_name, category=category)
         self.api_key = settings.NEWS_API_KEY
-        # Example: Different endpoints for different categories or general news
-        if category == "political":
-            self.endpoint = "https://newsapi.org/v2/top-headlines?country=us&category=politics"
-        elif category == "economic":
-             self.endpoint = "https://newsapi.org/v2/top-headlines?country=us&category=business"
-        # Add more categories or make it more generic
+
+        # Map categories to NewsAPI categories
+        category_mapping = {
+            "political": "politics",
+            "economic": "business",
+            "sports": "sports",
+            "technology": "technology",
+            "health": "health",
+            "science": "science",
+            "entertainment": "entertainment"
+        }
+
+        # Use mapped category or default to general news
+        api_category = category_mapping.get(category, "general")
+
+        # Use top-headlines for better quality news
+        self.endpoint = "https://newsapi.org/v2/top-headlines"
+        self.params = {
+            'country': 'us',
+            'category': api_category,
+            'pageSize': 20,
+            'apiKey': self.api_key
+        }
+
+        # If no API key, use mock data for testing
+        if not self.api_key or self.api_key == "your_news_api_key_here":
+            logger.warning("No valid NEWS_API_KEY found, using mock data")
+            self.use_mock_data = True
         else:
-            self.endpoint = f"https://newsapi.org/v2/everything?q={category}" # General query for other categories
+            self.use_mock_data = False
 
     def _fetch_data(self) -> list[dict]:
-        headers = {'Authorization': f'Bearer {self.api_key}'}
-        # More specific params could be added, like domains for RSS feeds (Reuters, AP, Bloomberg)
-        params = {'pageSize': 20} # Fetch a manageable number of articles
+        """Fetch news articles from NewsAPI or return mock data if no API key"""
+
+        if self.use_mock_data:
+            return self._get_mock_data()
 
         try:
-            response = requests.get(self.endpoint, headers=headers, params=params, timeout=10)
-            response.raise_for_status() # Raises HTTPError for bad responses (4XX or 5XX)
+            self.logger.info(f"Fetching news for category: {self.category}")
+            response = requests.get(self.endpoint, params=self.params, timeout=10)
+            response.raise_for_status()
+
             data = response.json()
+
+            if data.get('status') != 'ok':
+                self.logger.error(f"NewsAPI error: {data.get('message', 'Unknown error')}")
+                return []
+
             articles = data.get("articles", [])
+            self.logger.info(f"Fetched {len(articles)} articles for category: {self.category}")
 
-            # Implement deduplication logic here if needed (e.g., based on article URL or title hash)
-            # Implement relevance filtering here (e.g., keywords, source reputation)
+            # Filter out articles with [Removed] content (NewsAPI removes some content)
+            filtered_articles = [
+                article for article in articles
+                if article.get('title') != '[Removed]' and
+                   article.get('description') != '[Removed]'
+            ]
 
-            return articles
+            return filtered_articles
+
         except requests.exceptions.RequestException as e:
             self.logger.error(f"API request failed for {self.source_name} ({self.category}): {e}")
-            return [] # Return empty list on failure to prevent breaking the retry logic on non-transient errors
+            return []
+        except Exception as e:
+            self.logger.error(f"Unexpected error fetching news: {e}")
+            return []
+
+    def _get_mock_data(self) -> list[dict]:
+        """Return mock news data for testing when no API key is available"""
+        mock_articles = [
+            {
+                "source": {"id": "mock-news", "name": "Mock News"},
+                "author": "Test Author",
+                "title": f"Breaking: Mock {self.category.title()} News Story",
+                "description": f"This is a mock {self.category} news article for testing the data pipeline.",
+                "url": "https://example.com/mock-news-1",
+                "urlToImage": "https://via.placeholder.com/400x200",
+                "publishedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "content": f"Mock content for {self.category} news article. This helps test the collector without API keys."
+            },
+            {
+                "source": {"id": "mock-urgent", "name": "Mock Urgent News"},
+                "author": "Urgent Reporter",
+                "title": f"Urgent: Important {self.category.title()} Development",
+                "description": f"An urgent development in {self.category} that should trigger breaking news detection.",
+                "url": "https://example.com/mock-news-2",
+                "urlToImage": "https://via.placeholder.com/400x200",
+                "publishedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "content": f"Urgent breaking news content for {self.category}. This should be flagged as high priority."
+            }
+        ]
+
+        self.logger.info(f"Generated {len(mock_articles)} mock articles for category: {self.category}")
+        return mock_articles
 
     def _standardize_data(self, article: dict) -> dict:
-        """
-        Transforms a raw news article from NewsAPI.org into our standard format.
-        """
-        # Example using NewsArticleSchema Pydantic model for content validation & structure
-        # validated_content = NewsArticleSchema(**article).model_dump()
+        """Transform a news article into standard format"""
+
+        # Extract clean title and description
+        title = article.get("title", "").strip()
+        description = article.get("description", "").strip()
+
+        # Skip if essential data is missing or removed
+        if not title or not description or title == "[Removed]":
+            return None
 
         return {
             "source": self.source_name,
-            "event_type": "news_article", # Specific event type
+            "event_type": "news_article",
             "category": self.category,
-            "content": article, # Or validated_content if using Pydantic
+            "content": {
+                "title": title,
+                "description": description,
+                "url": article.get("url"),
+                "author": article.get("author"),
+                "publishedAt": article.get("publishedAt"),
+                "source_name": article.get("source", {}).get("name"),
+                "image_url": article.get("urlToImage"),
+                "full_content": article.get("content", "")[:500]  # Truncate long content
+            },
             "metadata": {
                 "fetch_timestamp": time.time(),
                 "article_url": article.get("url"),
                 "published_at": article.get("publishedAt"),
-                "api_source_name": article.get("source", {}).get("name") # e.g. "Reuters"
+                "api_source_name": article.get("source", {}).get("name"),
+                "collector_version": "1.0"
             },
-            "relevance_score": None, # Placeholder for now
+            "relevance_score": None,
         }
 
-# Example usage (you'd typically run this from a scheduler like cron or an orchestrator)
+    def collect(self):
+        """Override collect to filter out None results from standardization"""
+        try:
+            self.logger.info(f"Starting collection for {self.source_name}, category: {self.category}")
+            raw_items = self._fetch_data()
+
+            if not raw_items:
+                self.logger.info(f"No new data found for {self.source_name}, category: {self.category}")
+                return []
+
+            standardized_items = []
+            for item in raw_items:
+                try:
+                    standardized_item = self._standardize_data(item)
+                    if standardized_item:  # Only add non-None items
+                        standardized_items.append(standardized_item)
+                except Exception as e:
+                    self.logger.error(f"Error standardizing item from {self.source_name}: {e}")
+
+            if standardized_items:
+                self.publish_to_queue(standardized_items)
+                self.logger.info(f"Successfully collected and queued {len(standardized_items)} items from {self.source_name}")
+            else:
+                self.logger.info(f"No valid items to queue from {self.source_name}")
+
+            return standardized_items
+
+        except Exception as e:
+            self.logger.error(f"Error in collect method for {self.source_name}: {e}")
+            return []
+
+def run_all_categories():
+    """Run collectors for all categories"""
+    categories = ["political", "economic", "sports", "technology", "health"]
+
+    for category in categories:
+        try:
+            logger.info(f"Running news collector for category: {category}")
+            collector = NewsCollector(category=category)
+            results = collector.collect()
+            logger.info(f"Collected {len(results)} items for {category}")
+            time.sleep(2)  # Small delay between categories
+        except Exception as e:
+            logger.error(f"Error running collector for {category}: {e}")
+
 if __name__ == "__main__":
-    # Example: Collect political news
-    political_news_collector = NewsCollector(category="political")
-    political_news_collector.collect()
-
-    # Example: Collect economic news
-    economic_news_collector = NewsCollector(category="economic")
-    economic_news_collector.collect()
-
-    # You would instantiate and run collectors for other categories/sources similarly.
-    # For RSS, you might use a library like `feedparser`.
+    logging.basicConfig(level=logging.INFO)
+    run_all_categories()

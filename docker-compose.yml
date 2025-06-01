@@ -96,6 +96,25 @@ services:
         reservations:
           memory: 256M
 
+  breaking_news_monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: sh -c "sleep 20 && PYTHONPATH=. python collectors/breaking_news_monitor.py"
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - polymarket_network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
 volumes:
   redis_data:
 

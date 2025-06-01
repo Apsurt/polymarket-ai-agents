@@ -1,7 +1,15 @@
 import logging
 import time
-from .base import BaseCollector, QUEUES
-from app.core.db import execute_query, Json # If direct DB interaction is needed
+import sys
+import os
+
+# Add the project root to the Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from collectors.base import BaseCollector, QUEUES
+from app.core.db import execute_query, Json
 # from some_llm_client import CheaLLMClient # Replace with your actual LLM client (Ollama or API)
 
 logger = logging.getLogger(__name__)
