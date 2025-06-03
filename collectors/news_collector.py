@@ -48,7 +48,7 @@ class NewsCollector(BaseCollector):
             self.logger.info(f"Fetched {len(articles)} articles for category: {self.category}")
             filtered_articles = [
                 article for article in articles
-                if article.get('title') != '[Removed]' and article.get('description') != '[Removed]'
+                if article and article.get('title') != '[Removed]' and article.get('description') != '[Removed]'
             ]
             return filtered_articles
         except requests.exceptions.RequestException as e:
@@ -77,21 +77,43 @@ class NewsCollector(BaseCollector):
         return mock_articles
 
     def _standardize_data(self, article: dict) -> dict | None:
-        title = article.get("title", "").strip()
-        description = article.get("description", "").strip()
-        if not title or not description or title == "[Removed]": return None
+        if not article: # Defensive check
+            return None
+
+        # Robust handling of potentially None title and description
+        title = (article.get("title") or "").strip()
+        description = (article.get("description") or "").strip()
+
+        if not title or title == "[Removed]" or not description or description == "[Removed]":
+            return None
+
+        source_info = article.get("source") or {} # Ensure source_info is a dict
+        api_source_name_val = source_info.get("name")
+
+        content_raw = article.get("content")
+        full_content_val = (content_raw or "")[:500] # Ensure content is string before slicing
+
         return {
-            "source": self.source_name, "event_type": "news_article",
+            "source": self.source_name,
+            "event_type": "news_article",
             "category": self.category,
-            "content": {"title": title, "description": description, "url": article.get("url"),
-                        "author": article.get("author"), "publishedAt": article.get("publishedAt"),
-                        "source_name": article.get("source", {}).get("name"),
-                        "image_url": article.get("urlToImage"),
-                        "full_content": article.get("content", "")[:500]},
-            "metadata": {"fetch_timestamp": time.time(), "article_url": article.get("url"),
-                         "published_at": article.get("publishedAt"),
-                         "api_source_name": article.get("source", {}).get("name"),
-                         "collector_version": "1.0"},
+            "content": {
+                "title": title,
+                "description": description,
+                "url": article.get("url"),
+                "author": article.get("author"),
+                "publishedAt": article.get("publishedAt"),
+                "source_name": api_source_name_val,
+                "image_url": article.get("urlToImage"),
+                "full_content": full_content_val
+            },
+            "metadata": {
+                "fetch_timestamp": time.time(),
+                "article_url": article.get("url"),
+                "published_at": article.get("publishedAt"),
+                "api_source_name": api_source_name_val,
+                "collector_version": "1.0"
+            },
             "relevance_score": None,
         }
 
@@ -107,13 +129,17 @@ class NewsCollector(BaseCollector):
 
             processed_count = 0
             for item in raw_items:
+                if not item: # Skip if a None item was somehow included in raw_items
+                    self.logger.warning(f"Skipping None item encountered in raw_items from {self.source_name}")
+                    continue
                 try:
                     standardized_item = self._standardize_data(item)
                     if standardized_item:
                         validate_and_store_raw_event(standardized_item)
                         processed_count += 1
                 except Exception as e:
-                    self.logger.error(f"Error standardizing or storing item from {self.source_name}: {e}")
+                    # Log the problematic item along with the error for better debugging
+                    self.logger.error(f"Error standardizing or storing item from {self.source_name}. Item: {item}. Error: {e}", exc_info=True)
 
             if processed_count > 0:
                  self.logger.info(f"Successfully collected and stored {processed_count} items from {self.source_name}")
@@ -123,11 +149,11 @@ class NewsCollector(BaseCollector):
             return processed_count
 
         except Exception as e:
-            self.logger.error(f"Error in collect_and_store method for {self.source_name}: {e}")
+            self.logger.error(f"Error in collect_and_store method for {self.source_name}: {e}", exc_info=True)
             return 0
 
 def run_all_categories():
-    categories = ["political"]#, "economic", "sports", "technology", "health"]
+    categories = ["political", "economic", "sports", "technology", "health"]
     for category in categories:
         try:
             logger.info(f"Running news collector for category: {category}")
@@ -136,8 +162,8 @@ def run_all_categories():
             logger.info(f"Collected and stored {results_count} items for {category}")
             time.sleep(2)
         except Exception as e:
-            logger.error(f"Error running collector for {category}: {e}")
+            logger.error(f"Error running collector for {category}: {e}", exc_info=True)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     run_all_categories()
