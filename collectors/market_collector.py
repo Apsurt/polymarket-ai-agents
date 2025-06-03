@@ -1,163 +1,137 @@
 import requests
 import logging
 import time
-from .base import BaseCollector, QUEUES # Import QUEUES if you need to publish to a specific queue other than default [cite: 27]
+from .base import BaseCollector
 from app.core.config import settings
-# from schemas.data_schemas import MarketDataSchema # Example Pydantic schema for market data
+from app.core.db import execute_query, Json
+from workers.data_validator_worker import validate_and_store_raw_event
 
 logger = logging.getLogger(__name__)
 
 class MarketCollector(BaseCollector):
-    CALLS = 30 # Example: 30 calls per minute, assuming Polymarket API is generous [cite: 27]
-    PERIOD = 60 # seconds [cite: 27]
+    CALLS = 30
+    PERIOD = 60
 
     def __init__(self, category: str, market_source_name: str = "polymarket_api"):
         super().__init__(source_name=market_source_name, category=category)
-        # Polymarket API endpoint (replace with actual if different)
-        self.polymarket_api_url = "https://polymarket.com/api/v2/markets" # This is a conceptual URL, replace with the actual Polymarket API endpoint.
-        # You might need an API key if Polymarket requires authentication, add to settings.
+        self.polymarket_api_url = "https://polymarket.com/api/v2/markets"
         # self.api_key = settings.POLYMARKET_API_KEY
-
-        # Mapping categories to Polymarket query parameters if applicable
-        # This is illustrative; actual Polymarket API might have different filtering.
         self.category_mapping = {
-            "political": "politics",
-            "sports": "sports",
-            "economic": "economy",
-            "miscellaneous": "misc" # Or a broader query for these.
+            "political": "politics", "sports": "sports",
+            "economic": "economy", "miscellaneous": "misc"
         }
         self.query_category = self.category_mapping.get(category.lower(), "all")
 
-
     def _fetch_data(self) -> list[dict]:
-        """
-        Fetches market data from the Polymarket API.
-        Includes fetching prices, volumes, and new markets.
-        """
         self.logger.info(f"Fetching market data for category: {self.category} from {self.polymarket_api_url}")
-
-        params = {
-            'status': 'open', # Only get open markets
-            'category': self.query_category, # Filter by category [cite: 7]
-            'limit': 100 # Fetch a reasonable number of markets
-        }
-        # headers = {'Authorization': f'Bearer {self.api_key}'} # If API key is needed
-
+        params = {'status': 'open', 'category': self.query_category, 'limit': 100}
         try:
             response = requests.get(self.polymarket_api_url, params=params, timeout=15)
-            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            response.raise_for_status()
             data = response.json()
-            markets = data.get("data", []) # Assuming the API returns a 'data' key with a list of markets
-
+            markets = data.get("data", [])
             self.logger.info(f"Found {len(markets)} markets for category: {self.category}.")
-
-            # Implement deduplication logic here based on market_id or unique identifier
-            # For simplicity, we assume the API provides unique current markets.
-
-            # Historical data backfill and competitor odds scraping would be more complex
-            # and might warrant separate methods or even dedicated collectors/workers.
-            # E.g., for historical data:
-            # if self.category == "initial_backfill":
-            #    self._backfill_historical_data()
-
-            # E.g., for competitor odds:
-            # self._scrape_competitor_odds(markets)
-
+            # Deduplication, historical backfill, etc., would be implemented here or in separate methods.
             return markets
         except requests.exceptions.RequestException as e:
             self.logger.error(f"API request failed for {self.source_name} ({self.category}): {e}", exc_info=True)
-            return [] # Return empty list on failure
+            return []
 
     def _standardize_data(self, market: dict) -> dict:
-        """
-        Transforms a raw market item from Polymarket API into our standard format.
-        """
-        # Example: Extracting key market information. Adjust based on actual Polymarket API response structure.
-        market_id = market.get("id") or market.get("slug") # Use ID or slug as unique identifier [cite: 7]
+        market_id = market.get("id") or market.get("slug")
         title = market.get("title", "N/A")
-        description = market.get("description", "N/A")
-        current_price = market.get("currentPrice") # This might need to be extracted from specific outcomes
+        current_price = market.get("currentPrice")
         volume_usd = market.get("volumeUsd")
-        # Ensure category is correctly mapped to our internal categories (political, sports, economic, misc)
-        # Polymarket might use different category names.
         polymarket_category = market.get("category", "miscellaneous").lower()
-        if polymarket_category in ["politics", "political"]:
-            standardized_category = "political"
-        elif polymarket_category in ["sports", "gaming"]:
-            standardized_category = "sports"
-        elif polymarket_category in ["economy", "business", "finance"]:
-            standardized_category = "economic"
-        else:
-            standardized_category = "miscellaneous" # Default or handle unmapped categories
+        if polymarket_category in ["politics", "political"]: standardized_category = "political"
+        elif polymarket_category in ["sports", "gaming"]: standardized_category = "sports"
+        elif polymarket_category in ["economy", "business", "finance"]: standardized_category = "economic"
+        else: standardized_category = "miscellaneous"
 
-        return {
+        # General standardized item for raw_data_events
+        standard_event_item = {
             "source": self.source_name,
-            "event_type": "market_snapshot", # Specific event type [cite: 7]
-            "category": standardized_category, # Standardized category [cite: 7]
-            "content": market, # Store the full raw market data [cite: 7]
+            "event_type": "market_data_polymarket", # More specific event_type
+            "category": standardized_category,
+            "content": market, # Store the full raw market data
             "metadata": {
-                "fetch_timestamp": time.time(),
-                "market_id": market_id,
-                "title": title,
-                "url": market.get("url"),
-                "status": market.get("status"),
-                "ends_at": market.get("endsAt") # Market end time
+                "fetch_timestamp": time.time(), "market_id": market_id, "title": title,
+                "url": market.get("url"), "status": market.get("status"),
+                "ends_at": market.get("endsAt")
             },
-            "relevance_score": None, # Placeholder for now [cite: 7]
-            # Market-specific fields for direct storage in market_snapshots table [cite: 7]
-            "market_id_snapshot": str(market_id),
-            "price_snapshot": float(current_price) if current_price else None,
-            "volume_snapshot": int(volume_usd) if volume_usd else None,
-            "market_data_snapshot": market # Store full market data as JSONB [cite: 7]
+            "relevance_score": None
         }
 
-    def publish_to_queue(self, data_items: list[dict], queue_name: str = 'data_raw'):
-        """
-        Overrides the base publish_to_queue to also store market snapshots directly.
-        """
-        super().publish_to_queue(data_items, queue_name) # Enqueue to data.raw for general validation
+        # Data specific for market_snapshots table
+        market_snapshot_data = {
+            "market_id_snapshot": str(market_id),
+            "category_snapshot": standardized_category,
+            "price_snapshot": float(current_price) if current_price is not None else None, # [cite: 117]
+            "volume_snapshot": int(volume_usd) if volume_usd is not None else None, # [cite: 117]
+            "market_data_snapshot": market
+        }
+        # Combine them for processing within the collect_and_store method
+        standard_event_item['_market_snapshot_specific'] = market_snapshot_data
+        return standard_event_item
 
-        # Also, directly insert into the market_snapshots table for quick access to market data
-        for item in data_items:
-            if item and item.get("event_type") == "market_snapshot":
+
+    def _persist_market_snapshot(self, market_snapshot_data: dict):
+        """Persists a single market snapshot to the database."""
+        try:
+            query = """
+            INSERT INTO market_snapshots (market_id, category, price, volume, market_data)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (market_id) DO UPDATE SET
+                category = EXCLUDED.category, price = EXCLUDED.price, volume = EXCLUDED.volume, # [cite: 120]
+                market_data = EXCLUDED.market_data, timestamp = NOW(); # [cite: 121]
+            """
+            execute_query(query, (
+                market_snapshot_data['market_id_snapshot'], market_snapshot_data['category_snapshot'],
+                market_snapshot_data['price_snapshot'], market_snapshot_data['volume_snapshot'],
+                Json(market_snapshot_data['market_data_snapshot'])
+            ), commit=True)
+            logger.info(f"Inserted/Updated market snapshot for market ID {market_snapshot_data['market_id_snapshot']} in DB.")
+        except Exception as e:
+            logger.error(f"Failed to insert/update market snapshot into DB: {market_snapshot_data['market_id_snapshot']}. Error: {e}")
+
+    def collect_and_store(self):
+        """Collects, standardizes, and stores market data."""
+        collected_items = super().collect() # Calls BaseCollector's collect to get standardized items
+
+        processed_raw_count = 0
+        processed_snapshot_count = 0
+
+        for item in collected_items:
+            if item:
+                snapshot_specific_data = item.pop('_market_snapshot_specific', None)
+
+                # Store the main event data in raw_data_events
                 try:
-                    query = """
-                    INSERT INTO market_snapshots (market_id, category, price, volume, market_data)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (market_id) DO UPDATE SET
-                        category = EXCLUDED.category,
-                        price = EXCLUDED.price,
-                        volume = EXCLUDED.volume,
-                        market_data = EXCLUDED.market_data,
-                        timestamp = NOW();
-                    """
-                    # Use the specific snapshot fields prepared in _standardize_data
-                    execute_query(query, (
-                        item['market_id_snapshot'],
-                        item['category'],
-                        item['price_snapshot'],
-                        item['volume_snapshot'],
-                        Json(item['market_data_snapshot'])
-                    ), commit=True)
-                    logger.info(f"Inserted/Updated market snapshot for market ID {item['market_id_snapshot']} in DB.")
+                    validate_and_store_raw_event(item)
+                    processed_raw_count += 1
                 except Exception as e:
-                    logger.error(f"Failed to insert/update market snapshot into DB: {item['market_id_snapshot']}. Error: {e}")
+                    logger.error(f"Error storing raw market event for {item.get('metadata', {}).get('market_id')}: {e}")
+
+                # Store market snapshot data
+                if snapshot_specific_data:
+                    try:
+                        self._persist_market_snapshot(snapshot_specific_data)
+                        processed_snapshot_count +=1
+                    except Exception as e:
+                         logger.error(f"Error persisting market snapshot for {snapshot_specific_data.get('market_id_snapshot')}: {e}")
+
+        logger.info(f"Processed {processed_raw_count} raw market events and {processed_snapshot_count} market snapshots.")
+        return processed_raw_count + processed_snapshot_count
 
 
-# Example usage (you'd typically run this from a scheduler like cron or an orchestrator)
 if __name__ == "__main__":
-    # Example: Collect political markets
-    political_market_collector = MarketCollector(category="political")
-    political_market_collector.collect()
-
-    # Example: Collect sports markets
-    sports_market_collector = MarketCollector(category="sports")
-    sports_market_collector.collect()
-
-    # Example: Collect economic markets
-    economic_market_collector = MarketCollector(category="economic")
-    economic_market_collector.collect()
-
-    # Example: Collect miscellaneous markets
-    misc_market_collector = MarketCollector(category="miscellaneous")
-    misc_market_collector.collect()
+    collectors_to_run = [
+        MarketCollector(category="political"),
+        MarketCollector(category="sports"),
+        MarketCollector(category="economic"),
+        MarketCollector(category="miscellaneous")
+    ]
+    for collector_instance in collectors_to_run:
+        logger.info(f"Running market collector for category: {collector_instance.category}")
+        collector_instance.collect_and_store()
+        time.sleep(1) # Small delay
