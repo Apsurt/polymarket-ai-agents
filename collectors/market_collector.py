@@ -1,7 +1,13 @@
 import requests
 import logging
 import time
-from .base import BaseCollector
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+from collectors.base import BaseCollector
 from app.core.config import settings
 from app.core.db import execute_query, Json
 from workers.data_validator_worker import validate_and_store_raw_event
